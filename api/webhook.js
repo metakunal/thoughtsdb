@@ -5,12 +5,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-async function sendMessage(chatId, text) {
-  const url = `https://api.telegram.org/bot${process.env.BOT_TOKEN}/sendMessage`;
-  await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, text }),
+// Reply directly in the HTTP response — no outbound fetch needed
+function reply(res, chatId, text) {
+  return res.status(200).json({
+    method: "sendMessage",
+    chat_id: chatId,
+    text,
   });
 }
 
@@ -23,18 +23,15 @@ export default async function handler(req, res) {
     return res.status(405).send("Method not allowed");
   }
 
-  res.status(200).json({ ok: true }); // Acknowledge Telegram immediately
-
   const message = req.body?.message;
-  if (!message) return;
+  if (!message) return res.status(200).json({ ok: true });
 
   const chatId = message.chat.id;
   const userId = String(message.from.id);
   const text = message.text || message.caption || null;
 
   if (text === "/start") {
-    await sendMessage(chatId, "Hey! Your second brain is ready. Forward me anything — tweets, articles, book recs, reminders. I'll store it all.");
-    return;
+    return reply(res, chatId, "Hey! Your second brain is ready. Forward me anything — tweets, articles, book recs, reminders. I'll store it all.");
   }
 
   if (text === "/list") {
@@ -46,8 +43,7 @@ export default async function handler(req, res) {
       .limit(10);
 
     if (error || !data?.length) {
-      await sendMessage(chatId, "Nothing saved yet. Forward me something!");
-      return;
+      return reply(res, chatId, "Nothing saved yet. Forward me something!");
     }
 
     const list = data
@@ -58,13 +54,11 @@ export default async function handler(req, res) {
       })
       .join("\n\n");
 
-    await sendMessage(chatId, `Your last ${data.length} saves:\n\n${list}`);
-    return;
+    return reply(res, chatId, `Your last ${data.length} saves:\n\n${list}`);
   }
 
   if (!text) {
-    await sendMessage(chatId, "Got your message! (Note: only text is stored for now)");
-    return;
+    return reply(res, chatId, "Got your message! (Note: only text is stored for now)");
   }
 
   const isForwarded = !!message.forward_date;
@@ -83,13 +77,12 @@ export default async function handler(req, res) {
 
   if (error) {
     console.error("Supabase insert error:", error.message);
-    await sendMessage(chatId, "Something went wrong saving that. Try again.");
-    return;
+    return reply(res, chatId, "Something went wrong saving that. Try again.");
   }
 
   const confirmation = isForwarded && forwardedFrom
     ? `Saved! (forwarded from ${forwardedFrom})`
     : "Saved to your second brain!";
 
-  await sendMessage(chatId, confirmation);
+  return reply(res, chatId, confirmation);
 }
