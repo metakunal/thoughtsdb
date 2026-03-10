@@ -61,11 +61,16 @@ export default async function handler(req, res) {
     return reply(res, chatId, "Got your message! (Note: only text is stored for now)");
   }
 
-  const isForwarded = !!message.forward_date;
+  // Telegram Bot API v6+ uses forward_origin instead of forward_date
+  const isForwarded = !!message.forward_origin || !!message.forward_date;
   const forwardedFrom =
+    message.forward_origin?.sender_user?.username ||
+    message.forward_origin?.chat?.title ||
+    message.forward_origin?.sender_user_name ||
     message.forward_from?.username ||
     message.forward_from_chat?.title ||
     null;
+
 
   const { error } = await supabase.from("saves").insert({
     user_id: userId,
