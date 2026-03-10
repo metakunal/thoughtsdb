@@ -30,6 +30,8 @@ export default async function handler(req, res) {
   const userId = String(message.from.id);
   const text = message.text || message.caption || null;
 
+  console.log("RAW MESSAGE:", JSON.stringify(message, null, 2));
+
   if (text === "/start") {
     return reply(res, chatId, "Hey! Your second brain is ready. Forward me anything — tweets, articles, book recs, reminders. I'll store it all.");
   }
