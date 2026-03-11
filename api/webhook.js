@@ -1,9 +1,12 @@
 import { createClient } from "@supabase/supabase-js";
+import Groq from "groq-sdk";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
+
+const openai = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 // Reply directly in the HTTP response — no outbound fetch needed
 function reply(res, chatId, text) {
@@ -12,6 +15,47 @@ function reply(res, chatId, text) {
     chat_id: chatId,
     text,
   });
+}
+
+// AI processing — classifies and summarises the saved content
+async function processWithAI(text) {
+  try {
+    const response = await openai.chat.completions.create({
+      model: "llama-3.1-8b-instant", 
+      max_tokens: 200,
+      messages: [
+        {
+          role: "system",
+          content: `You are a second brain assistant. Analyse the given text and return ONLY a JSON object with no markdown, no backticks, no explanation.`,
+        },
+        {
+          role: "user",
+          content: `Analyse this saved content and return JSON only:
+
+"${text}"
+
+Return this exact JSON structure:
+{
+  "source_type": "one of: tweet | article | book | reminder | quote | video | other",
+  "tags": ["tag1", "tag2", "tag3"],
+  "summary": "one sentence summary under 15 words",
+  "title": "short title for this save, under 8 words"
+}`,
+        },
+      ],
+    });
+
+    const raw = response.choices[0].message.content.trim();
+    return JSON.parse(raw);
+  } catch (err) {
+    console.error("AI processing error:", err.message);
+    return {
+      source_type: "other",
+      tags: [],
+      summary: null,
+      title: null,
+    };
+  }
 }
 
 export default async function handler(req, res) {
@@ -30,8 +74,6 @@ export default async function handler(req, res) {
   const userId = String(message.from.id);
   const text = message.text || message.caption || null;
 
-  console.log("RAW MESSAGE:", JSON.stringify(message, null, 2));
-
   if (text === "/start") {
     return reply(res, chatId, "Hey! Your second brain is ready. Forward me anything — tweets, articles, book recs, reminders. I'll store it all.");
   }
@@ -39,7 +81,7 @@ export default async function handler(req, res) {
   if (text === "/list") {
     const { data, error } = await supabase
       .from("saves")
-      .select("raw_text, created_at")
+      .select("title, source_type, created_at")
       .eq("user_id", userId)
       .order("created_at", { ascending: false })
       .limit(10);
@@ -51,10 +93,11 @@ export default async function handler(req, res) {
     const list = data
       .map((item, i) => {
         const date = new Date(item.created_at).toLocaleDateString();
-        const preview = item.raw_text?.slice(0, 80) || "[no text]";
-        return `${i + 1}. [${date}] ${preview}...`;
+        const label = item.source_type ? `[${item.source_type}]` : "";
+        const title = item.title || "Untitled";
+        return `${i + 1}. ${label} ${title} — ${date}`;
       })
-      .join("\n\n");
+      .join("\n");
 
     return reply(res, chatId, `Your last ${data.length} saves:\n\n${list}`);
   }
@@ -63,33 +106,28 @@ export default async function handler(req, res) {
     return reply(res, chatId, "Got your message! (Note: only text is stored for now)");
   }
 
-  // Telegram Bot API v6+ uses forward_origin instead of forward_date
-  const isForwarded = !!message.forward_origin || !!message.forward_date;
-  const forwardedFrom =
-    message.forward_origin?.sender_user?.username ||
-    message.forward_origin?.chat?.title ||
-    message.forward_origin?.sender_user_name ||
-    message.forward_from?.username ||
-    message.forward_from_chat?.title ||
-    null;
+  // Reply to user immediately — don't make them wait for AI
+  reply(res, chatId, "Saving...");
 
+  // Process with AI after responding
+  const ai = await processWithAI(text);
 
   const { error } = await supabase.from("saves").insert({
     user_id: userId,
     raw_text: text,
-    is_forwarded: isForwarded,
-    forwarded_from: forwardedFrom,
-    source_type: null,
+    is_forwarded: !!message.forward_origin || !!message.forward_date,
+    forwarded_from:
+      message.forward_origin?.sender_user?.username ||
+      message.forward_origin?.chat?.title ||
+      message.forward_origin?.sender_user_name ||
+      null,
+    source_type: ai.source_type,
+    tags: ai.tags,
+    summary: ai.summary,
+    title: ai.title,
   });
 
   if (error) {
     console.error("Supabase insert error:", error.message);
-    return reply(res, chatId, "Something went wrong saving that. Try again.");
   }
-
-  const confirmation = isForwarded && forwardedFrom
-    ? `Saved! (forwarded from ${forwardedFrom})`
-    : "Saved to your second brain!";
-
-  return reply(res, chatId, confirmation);
 }
