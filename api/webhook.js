@@ -36,9 +36,9 @@ async function getEmbedding(text) {
     const data = await response.json();
     return data.embeddings.float[0];
   } catch (err) {
-    console.error("Embedding error:", err.message);
-    return null;
-  }
+  console.error("Embedding error FULL:", JSON.stringify(err, Object.getOwnPropertyNames(err)));
+  return null;
+}
 }
 
 // AI processing — classifies and summarises content
