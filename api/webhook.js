@@ -18,27 +18,34 @@ function reply(res, chatId, text) {
 }
 
 // Generate embedding via Cohere
-async function getEmbedding(text) {
-  try {
-    const response = await fetch("https://api.cohere.com/v2/embed", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.COHERE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        texts: [text],
-        model: "embed-english-v3.0",
-        input_type: "search_document",
-        embedding_types: ["float"],
-      }),
-    });
-    const data = await response.json();
-    return data.embeddings.float[0];
-  } catch (err) {
-  console.error("Embedding error FULL:", JSON.stringify(err, Object.getOwnPropertyNames(err)));
-  return null;
-}
+async function getEmbedding(text, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await fetch("https://api.cohere.com/v2/embed", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${process.env.COHERE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          texts: [text],
+          model: "embed-english-v3.0",
+          input_type: "search_document",
+          embedding_types: ["float"],
+        }),
+      });
+      const data = await response.json();
+      return data.embeddings.float[0];
+    } catch (err) {
+      const isLastAttempt = i === retries - 1;
+      if (isLastAttempt) {
+        console.error("Embedding failed after retries:", err.message);
+        return null;
+      }
+      // Wait longer between each retry: 1s, 2s, 3s
+      await new Promise(r => setTimeout(r, (i + 1) * 1000));
+    }
+  }
 }
 
 // AI processing — classifies and summarises content
