@@ -1,4 +1,5 @@
 import { createClient } from "@supabase/supabase-js";
+import { getEmbedding, searchSaves } from "../lib/search.js";
 import Groq from "groq-sdk";
 
 const supabase = createClient(
@@ -15,37 +16,6 @@ function reply(res, chatId, text) {
     chat_id: chatId,
     text,
   });
-}
-
-// Generate embedding via Cohere
-async function getEmbedding(text, retries = 3) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      const response = await fetch("https://api.cohere.com/v2/embed", {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${process.env.COHERE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          texts: [text],
-          model: "embed-english-v3.0",
-          input_type: "search_document",
-          embedding_types: ["float"],
-        }),
-      });
-      const data = await response.json();
-      return data.embeddings.float[0];
-    } catch (err) {
-      const isLastAttempt = i === retries - 1;
-      if (isLastAttempt) {
-        console.error("Embedding failed after retries:", err.message);
-        return null;
-      }
-      // Wait longer between each retry: 1s, 2s, 3s
-      await new Promise(r => setTimeout(r, (i + 1) * 1000));
-    }
-  }
 }
 
 // AI processing — classifies and summarises content
@@ -87,39 +57,6 @@ Return this exact JSON structure:
       }
       await new Promise(r => setTimeout(r, (i + 1) * 1000));
     }
-  }
-}
-
-// Semantic search via pgvector
-async function searchSaves(userId, query) {
-  try {
-    const response = await fetch("https://api.cohere.com/v2/embed", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${process.env.COHERE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        texts: [query],
-        model: "embed-english-v3.0",
-        input_type: "search_query", // different input_type for queries vs documents
-        embedding_types: ["float"],
-      }),
-    });
-    const data = await response.json();
-    const queryEmbedding = data.embeddings.float[0];
-
-    const { data: results, error } = await supabase.rpc("search_saves", {
-      query_embedding: queryEmbedding,
-      match_user_id: userId,
-      match_count: 5,
-    });
-
-    if (error) throw error;
-    return results;
-  } catch (err) {
-    console.error("Search error:", err.message);
-    return [];
   }
 }
 
