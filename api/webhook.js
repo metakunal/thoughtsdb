@@ -49,19 +49,20 @@ async function getEmbedding(text, retries = 3) {
 }
 
 // AI processing — classifies and summarises content
-async function processWithAI(text) {
-  try {
-    const response = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      max_tokens: 200,
-      messages: [
-        {
-          role: "system",
-          content: "You are a second brain assistant. Analyse the given text and return ONLY a JSON object with no markdown, no backticks, no explanation.",
-        },
-        {
-          role: "user",
-          content: `Analyse this saved content and return JSON only:
+async function processWithAI(text, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const response = await groq.chat.completions.create({
+        model: "llama-3.1-8b-instant",
+        max_tokens: 200,
+        messages: [
+          {
+            role: "system",
+            content: "You are a second brain assistant. Analyse the given text and return ONLY a JSON object with no markdown, no backticks, no explanation.",
+          },
+          {
+            role: "user",
+            content: `Analyse this saved content and return JSON only:
 
 "${text}"
 
@@ -72,15 +73,20 @@ Return this exact JSON structure:
   "summary": "one sentence summary under 15 words",
   "title": "short title for this save, under 8 words"
 }`,
-        },
-      ],
-    });
+          },
+        ],
+      });
 
-    const raw = response.choices[0].message.content.trim();
-    return JSON.parse(raw);
-  } catch (err) {
-    console.error("AI processing error:", err.message);
-    return { source_type: "other", tags: [], summary: null, title: null };
+      const raw = response.choices[0].message.content.trim();
+      return JSON.parse(raw);
+    } catch (err) {
+      const isLastAttempt = i === retries - 1;
+      if (isLastAttempt) {
+        console.error("AI processing failed after retries:", err.message);
+        return { source_type: "other", tags: [], summary: null, title: null };
+      }
+      await new Promise(r => setTimeout(r, (i + 1) * 1000));
+    }
   }
 }
 
