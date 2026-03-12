@@ -238,6 +238,21 @@ export default async function handler(req, res) {
     );
   }
 
+  if (text === "/pin") {
+  const pin = Math.floor(100000 + Math.random() * 900000).toString();
+  const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+  await supabase.from("pins").insert({
+    telegram_id: userId,
+    pin,
+    expires_at: expiresAt.toISOString(),
+  });
+
+  return reply(res, chatId,
+    `Your login PIN: ${pin}\n\nEnter this on the dashboard. Valid for 5 minutes.`
+  );
+}
+
   if (!text) {
     return reply(res, chatId, "Got your message! (Note: only text is stored for now)");
   }
