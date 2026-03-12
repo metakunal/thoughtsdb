@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
-import { getEmbedding, searchSaves } from "../lib/search.js";
 import Groq from "groq-sdk";
+import { getEmbedding, searchSaves } from "../lib/search.js";
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -16,6 +16,37 @@ function reply(res, chatId, text) {
     chat_id: chatId,
     text,
   });
+}
+
+// Auto-register user on first message, update last_active on return
+async function upsertUser(from) {
+  const { error } = await supabase
+    .from("users")
+    .upsert(
+      {
+        telegram_id: String(from.id),
+        first_name: from.first_name || null,
+        username: from.username || null,
+        last_active: new Date().toISOString(),
+      },
+      { onConflict: "telegram_id", ignoreDuplicates: false }
+    );
+
+  if (error) console.error("Upsert user error:", error.message);
+}
+
+// Check limit and increment counter in one DB call
+async function checkAndIncrementLimit(userId) {
+  const { data, error } = await supabase.rpc("increment_save_count", {
+    p_telegram_id: userId,
+  });
+
+  if (error) {
+    console.error("Limit check error:", error.message);
+    return true; // Fail open — don't block saves on DB errors
+  }
+
+  return data; // true = allowed, false = limit reached
 }
 
 // AI processing — classifies and summarises content
@@ -50,19 +81,18 @@ Return this exact JSON structure:
       const raw = response.choices[0].message.content.trim();
       return JSON.parse(raw);
     } catch (err) {
-      const isLastAttempt = i === retries - 1;
-      if (isLastAttempt) {
+      if (i === retries - 1) {
         console.error("AI processing failed after retries:", err.message);
         return { source_type: "other", tags: [], summary: null, title: null };
       }
-      await new Promise(r => setTimeout(r, (i + 1) * 1000));
+      await new Promise((r) => setTimeout(r, (i + 1) * 1000));
     }
   }
 }
 
 async function generateDigest(userId) {
-  // Fetch last 7 days of saves
-  const since = new Date();
+// Fetch last 7 days of saves
+    const since = new Date();
   since.setDate(since.getDate() - 7);
 
   const { data, error } = await supabase
@@ -74,7 +104,7 @@ async function generateDigest(userId) {
 
   if (error || !data?.length) return null;
 
-  // Build a compact representation to send to Groq
+// Build a compact representation to send to Groq
   const savesText = data
     .map((s, i) => `${i + 1}. [${s.source_type}] ${s.title || "Untitled"}: ${s.summary || s.raw_text?.slice(0, 100)}`)
     .join("\n");
@@ -125,8 +155,13 @@ export default async function handler(req, res) {
   const userId = String(message.from.id);
   const text = message.text || message.caption || null;
 
+  // Auto-register or update user on every message
+  await upsertUser(message.from);
+
   if (text === "/start") {
-    return reply(res, chatId, "Hey! Your second brain is ready.\n\nCommands:\n/list — see recent saves\n/search <query> — search your saves");
+    return reply(res, chatId,
+      `Hey ${message.from.first_name || "there"}! Your second brain is ready.\n\nForward me anything — tweets, articles, book recs, reminders. I'll organise it all.\n\nCommands:\n/list — recent saves\n/search <query> — search your saves\n/digest — weekly summary\n/usage — check your save count`
+    );
   }
 
   if (text === "/list") {
@@ -153,17 +188,6 @@ export default async function handler(req, res) {
     return reply(res, chatId, `Your last ${data.length} saves:\n\n${list}`);
   }
 
-  if (text === "/digest") {
-  const digest = await generateDigest(userId);
-
-  if (!digest) {
-    return reply(res, chatId, "No saves found in the last 7 days. Start saving things first!");
-  }
-
-  return reply(res, chatId, digest);
-}
-
-  // Handle /search command
   if (text?.startsWith("/search")) {
     const query = text.replace("/search", "").trim();
 
@@ -189,21 +213,55 @@ export default async function handler(req, res) {
     return reply(res, chatId, `Results for "${query}":\n\n${formatted}`);
   }
 
+  if (text === "/digest") {
+    const digest = await generateDigest(userId);
+
+    if (!digest) {
+      return reply(res, chatId, "No saves found in the last 7 days. Start saving things first!");
+    }
+
+    return reply(res, chatId, digest);
+  }
+
+  if (text === "/usage") {
+    const { data } = await supabase
+      .from("users")
+      .select("saves_this_month, plan")
+      .eq("telegram_id", userId)
+      .single();
+
+    if (!data) return reply(res, chatId, "Something went wrong.");
+
+    const limit = data.plan === "pro" ? "unlimited" : "100";
+    return reply(res, chatId,
+      `Plan: ${data.plan}\nSaves this month: ${data.saves_this_month}/${limit}`
+    );
+  }
+
   if (!text) {
     return reply(res, chatId, "Got your message! (Note: only text is stored for now)");
   }
 
-  // Reply to user immediately
+  // Check usage limit before saving
+  const allowed = await checkAndIncrementLimit(userId);
+  if (!allowed) {
+    return reply(res, chatId,
+      "You've hit the free tier limit of 100 saves this month. Upgrade to Pro for unlimited saves."
+    );
+  }
+
+  // Reply immediately
   reply(res, chatId, "Saving...");
 
   // Process AI + embeddings in parallel
   const [ai, embedding] = await Promise.all([
     processWithAI(text),
-    getEmbedding(text),
+    getEmbedding(text, "search_document"),
   ]);
 
   const { error } = await supabase.from("saves").insert({
     user_id: userId,
+    telegram_id: userId,
     raw_text: text,
     is_forwarded: !!message.forward_origin || !!message.forward_date,
     forwarded_from:
