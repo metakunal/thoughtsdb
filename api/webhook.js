@@ -60,6 +60,55 @@ Return this exact JSON structure:
   }
 }
 
+async function generateDigest(userId) {
+  // Fetch last 7 days of saves
+  const since = new Date();
+  since.setDate(since.getDate() - 7);
+
+  const { data, error } = await supabase
+    .from("saves")
+    .select("title, summary, source_type, tags, raw_text")
+    .eq("user_id", userId)
+    .gte("created_at", since.toISOString())
+    .order("created_at", { ascending: false });
+
+  if (error || !data?.length) return null;
+
+  // Build a compact representation to send to Groq
+  const savesText = data
+    .map((s, i) => `${i + 1}. [${s.source_type}] ${s.title || "Untitled"}: ${s.summary || s.raw_text?.slice(0, 100)}`)
+    .join("\n");
+
+  const response = await groq.chat.completions.create({
+    model: "llama-3.1-8b-instant",
+    max_tokens: 500,
+    messages: [
+      {
+        role: "system",
+        content: "You are a second brain assistant helping someone understand their own thinking patterns.",
+      },
+      {
+        role: "user",
+        content: `Here are the things I saved this week:
+
+${savesText}
+
+Give me a digest in this exact format:
+
+THEMES: 2-3 dominant themes across everything saved, one line each.
+
+INSIGHT: One sharp observation about what I seem to be thinking about or working on. Be specific, not generic.
+
+REVISIT: The single most interesting thing I should go back and read properly.
+
+Keep it tight. No fluff.`,
+      },
+    ],
+  });
+
+  return response.choices[0].message.content.trim();
+}
+
 export default async function handler(req, res) {
   if (req.method === "GET") {
     return res.status(200).send("Second Brain Bot is running.");
@@ -103,6 +152,16 @@ export default async function handler(req, res) {
 
     return reply(res, chatId, `Your last ${data.length} saves:\n\n${list}`);
   }
+
+  if (text === "/digest") {
+  const digest = await generateDigest(userId);
+
+  if (!digest) {
+    return reply(res, chatId, "No saves found in the last 7 days. Start saving things first!");
+  }
+
+  return reply(res, chatId, digest);
+}
 
   // Handle /search command
   if (text?.startsWith("/search")) {
